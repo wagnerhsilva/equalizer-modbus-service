@@ -7,6 +7,7 @@
 #include <pthread.h>
 #include <unistd.h>
 
+#define MODBUS_START_ADDRESS 20000
 #define MAX_CONNECTIONS 1
 #define FETCH_TIMEOUT 10 * 1000 // 1min
 #define DATABASE_PATH "/var/www/equalizer-api/equalizer-api/equalizerdb"
@@ -76,12 +77,16 @@ void server_fill_mapping(Server_t * Server, CMState * State){
     if(Server->Mapping != 0){
         modbus_mapping_free(Server->Mapping);
     }
+    int Address = 0;
     int ElementCount = State->BatteryCount * State->StringCount * State->FieldCount;
     int CountInUint16 = ElementCount  * 2; //everything is in floats, so double the uint16_t
-    Server->Mapping = modbus_mapping_new(0, 0, CountInUint16, 0);
-    int StartAddress = 0;
+    Server->Mapping = modbus_mapping_new_start_address(0, 0, 0, 0, MODBUS_START_ADDRESS, CountInUint16 + 2, 0, 0);
+    
+    Server->Mapping->tab_registers[Address++] = (uint16_t) State->BatteryCount;
+    Server->Mapping->tab_registers[Address++] = (uint16_t) State->StringCount;
+    
     for(int i = 0; i < ElementCount; i += 1){
-        int TargetAddr = StartAddress + 2 * i;
+        int TargetAddr = Address + 2 * i;
         modbus_set_float_abcd(State->LinearDataLogRT[i],
                        &(Server->Mapping->tab_registers[TargetAddr]));
     }
@@ -97,7 +102,6 @@ void __timed_update(Server_t * Server, CMState * State, CMDatabase * Database){
          * In case there were no updates we need to manually update the values from the Mapping
          * When the update accours the State is automaticly updated
         */
-        std::cout << "Updating Data Values" << std::endl;
         CMDB_fetch_data(Database, State);
     }
     /*
