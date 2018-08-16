@@ -42,7 +42,8 @@ struct CMState{
     int StringCount;
     int BatteryCount;
     int FieldCount;
-    float * LinearDataLogRT;
+    /* Flavio Alves: mudança para int */
+    int * LinearDataLogRT;
 };
 
 static QueryRet CMDB_looped_query_begin(CMDatabase * Database, std::string SQLQuery){
@@ -106,21 +107,28 @@ static QueryRet CMDB_looped_query_next(CMDatabase * Database){
 }
 
 bool CMDB_fetch_data(CMDatabase * Database, CMState * State){
+//	printf("CMDB_fetch_data\n");
     bool Result = true;
+    /* Flavio Alves: simplificação da consulta */
+    //std::string SQLQuery("SELECT temperatura, impedancia, tensao, equalizacao, batstatus FROM DataLogRT");
+
     std::string SQLQuery("SELECT temperatura, impedancia, tensao, equalizacao, batstatus FROM DataLogRT as RVAL");
     SQLQuery += " WHERE CAST(SUBSTR(RVAL.string, 2, length(RVAL.string)) as integer) <= " + MAKE_STR(State->StringCount, int);
     SQLQuery += " AND CAST(SUBSTR(RVAL.bateria, 2, length(RVAL.bateria)) as integer) <= " + MAKE_STR(State->BatteryCount, int);
     SQLQuery += " ORDER BY CAST(SUBSTR(RVAL.string, 2, length(RVAL.string)) as integer),";
     SQLQuery += " CAST(SUBSTR(RVAL.bateria, 2, length(RVAL.bateria)) as integer);";
     
+
     int Index = 0;
     QueryRet iterator = CMDB_looped_query_begin(Database, SQLQuery);
-    State->LinearDataLogRT[Index++] = (float) atof(iterator.Text.c_str());
+    /* Flavio Alves: mudança para int */
+    State->LinearDataLogRT[Index++] = (int) atoi(iterator.Text.c_str());
     Result &= iterator.HasData;
     
     while(CMDB_looped_query_continue(Database)){
         iterator = CMDB_looped_query_next(Database);
-        State->LinearDataLogRT[Index++] = (float) atof(iterator.Text.c_str());
+        /* Flavio Alves: mudança para int */
+        State->LinearDataLogRT[Index++] = (int) atoi(iterator.Text.c_str());
         Result &= iterator.HasData;
     }
   
@@ -163,9 +171,10 @@ static bool CMDB_set_configuration(CMDatabase * Database, CMState *State){
         
         int TotalElementCount = State->StringCount * State->BatteryCount * FIELDS_PASSED;
         int MemoryBlock = TotalElementCount; //each field takes 2 uint16_t (floats)
-        State->LinearDataLogRT = new float[MemoryBlock];
+        /* Flavio Alves: mudança de float para int */
+        State->LinearDataLogRT = new int[MemoryBlock];
         State->FieldCount = FIELDS_PASSED;
-        memset(State->LinearDataLogRT, 0, sizeof(float) * MemoryBlock);
+        memset(State->LinearDataLogRT, 0, sizeof(int) * MemoryBlock);
         Updated = CMDB_fetch_data(Database, State);
     }
     

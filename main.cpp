@@ -74,6 +74,8 @@ int server_handle_connection(Server_t *Server){
  * handler structure
 */
 void server_fill_mapping(Server_t * Server, CMState * State){
+	printf("Inicializando tabela MODBUS\n");
+
     if(Server->Mapping != 0){
         modbus_mapping_free(Server->Mapping);
     }
@@ -86,10 +88,18 @@ void server_fill_mapping(Server_t * Server, CMState * State){
     Server->Mapping->tab_registers[Address++] = (uint16_t) State->StringCount;
     
     for(int i = 0; i < ElementCount; i += 1){
-        int TargetAddr = Address + 2 * i;
-        modbus_set_float_abcd(State->LinearDataLogRT[i],
-                       &(Server->Mapping->tab_registers[TargetAddr]));
+        /* Flavio Alves: mudança de float para int 
+         * float exigia 32 bits. O inteiro que vamos fornecer precisa de
+         * apenas 16 bits. Então a regra de atualização muda também, sem
+         * precisar mudar os registros de 2 em 2.
+         */
+        int TargetAddr = Address + i;
+        Server->Mapping->tab_registers[TargetAddr] = (uint16_t)State->LinearDataLogRT[i];
+        // modbus_set_float_abcd(State->LinearDataLogRT[i],
+                    //    &(Server->Mapping->tab_registers[TargetAddr]));
     }
+
+    printf("Tabela inicializada\n");
 }
 
 /*
@@ -171,15 +181,21 @@ void WaitDatabase(const char *path){
  * Entry point
 */
 int main(int argc, char **argv){
+//	printf("Inicio da execução\n");
     WaitDatabase(DATABASE_PATH);
 
+//    printf("Inicializando banco de dados\n");
     CMDatabase *Database = CMDB_new(DATABASE_PATH);
     CMState State;
     State.LinearDataLogRT = 0;
+
+//    printf("Realizando primeira busca no banco de dados\n");
     if(!CMDB_query_state(Database, &State)){
         std::cout << "Failed to perform SQL Linearization" << std::endl;
         return -1;
     }
+
+//    printf("Inicializando MODBUS\n");
     (void) init_modbus(Database, &State);
     
     return 0;
