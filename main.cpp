@@ -74,7 +74,7 @@ int server_handle_connection(Server_t *Server){
  * handler structure
 */
 void server_fill_mapping(Server_t * Server, CMState * State){
-	printf("Inicializando tabela MODBUS\n");
+//	printf("Inicializando tabela MODBUS\n");
 
     if(Server->Mapping != 0){
         modbus_mapping_free(Server->Mapping);
@@ -99,7 +99,7 @@ void server_fill_mapping(Server_t * Server, CMState * State){
                     //    &(Server->Mapping->tab_registers[TargetAddr]));
     }
 
-    printf("Tabela inicializada\n");
+//    printf("Tabela inicializada\n");
 }
 
 /*
