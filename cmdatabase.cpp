@@ -1,200 +1,144 @@
 #include <stdint.h>
 #include <sqlite3.h>
-#include <string>
-#include <iostream>
-#include <map>
-#include <sstream>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <modbus.h>
+#include "cmdatabase.h"
 
 #define FIELDS_PASSED 5 //temperatura, impedancia, tensao, equalizacao, batstatus
 
 #define DATABASE_SOURCE_DATA    "DataLogRT"
-#define DATABASE_PARAMETER_DATA "Parameters"
 #define DATABASE_MODULO_DATA    "Modulo"
 
-#define MAKE_STR(y, x) __to_str<x>(y)
+static sqlite3 *SQLDatabase;
 
-template<typename T>
-static std::string __to_str(T Value){
-    std::ostringstream ss;
-    ss << Value;
-    std::string Output(ss.str());
-    return Output;
-}
-
-struct CMDatabase{
-    sqlite3 *SQLDatabase;
-    int OnQuery;
-    int QueryIndex;
-    int QueryMaxItens;
+int CMDB_get_stringData(CMState * State, modbus_mapping_t *Mapping) {
+    int ret = 0;
+    int i = 0;
+    int nbElements = State->BatteryCount*State->StringCount;
+    int Address = 0;
+    int nbColumns = 0;
+    char SQLQuery[512] = { 0 };
     struct sqlite3_stmt *Statement;
 
-    std::map<std::string, int> ConfigurationMap;
-};
+//    printf("CMDB_getStringData:Inicio\n");
 
-struct QueryRet{
-    std::string Text;
-    std::string Column;
-    bool HasData;
-};
+    /*
+     * Construindo a consulta SQL
+     */
+    sprintf(SQLQuery,"SELECT temperatura, impedancia, tensao, equalizacao, batstatus FROM DataLogRT LIMIT %d;",nbElements);
+//    printf("String SQL:%s\n",SQLQuery);
 
-struct CMState{
-    int StringCount;
-    int BatteryCount;
-    int FieldCount;
-    /* Flavio Alves: mudança para int */
-    int * LinearDataLogRT;
-};
+    /*
+     * Inicializando a tabela com os valores ja conhecidos
+     */
+    Mapping->tab_registers[Address++] = (uint16_t) State->BatteryCount;
+//    printf("tab_register[%d]=%d\n",(Address-1),Mapping->tab_registers[Address-1]);
+    Mapping->tab_registers[Address++] = (uint16_t) State->StringCount;
+//    printf("tab_register[%d]=%d\n",(Address-1),Mapping->tab_registers[Address-1]);
 
-static QueryRet CMDB_looped_query_begin(CMDatabase * Database, std::string SQLQuery){
-    Database->OnQuery = false;
-    int Result = sqlite3_prepare_v2(Database->SQLDatabase, SQLQuery.c_str(),
-                                     -1, &Database->Statement, NULL);
-    QueryRet Return;
-    Return.HasData = false;
-    if(Result == SQLITE_OK){
-        if(sqlite3_step(Database->Statement) == SQLITE_ROW){
-            int Columns = sqlite3_column_count(Database->Statement);
-            Database->QueryIndex = 0;
-            Database->QueryMaxItens = Columns;
-            const void *VData = sqlite3_column_text(Database->Statement,
-                                                    Database->QueryIndex);
-            if(VData){
-                Return.Text = std::string((const char*)VData);
-            }else{
-                Return.Text = std::string("");
-            }
-            Return.Column = std::string((const char *)sqlite3_column_name(Database->Statement,
-                                                                          Database->QueryIndex));
-            Database->OnQuery = true;
-            Return.HasData = true;
-        }
+    /*
+     * Executando a consulta
+     */
+//    printf("Executando busca ...\n");
+    if(sqlite3_prepare_v2(SQLDatabase, SQLQuery,-1, &Statement, NULL) != SQLITE_OK){
+    	printf("Failed to fetch data: %s\n", sqlite3_errmsg(SQLDatabase));
+    	return -1;
     }
-    
-    return Return;
+
+    /*
+     * Recebendo os dados
+     */
+    while(sqlite3_step(Statement) != SQLITE_DONE) {
+    	nbColumns = sqlite3_column_count(Statement);
+//    	printf("Numero de colunas: %d\n",nbColumns);
+    	/* Sanity check */
+    	if (nbColumns != 5) {
+    		printf("Erro na recuperacao da linha do banco de dados: %d\n",nbColumns);
+    		ret = -1;
+    		break; /* Sai do loop */
+    	}
+    	/* A informação é armazenada em FLOAT no banco, mesmo
+    	 * não havendo tratamento previo para isso.
+    	 */
+    	for (i=0;i<nbColumns;i++) {
+    		Mapping->tab_registers[Address++] = (int)sqlite3_column_double(Statement, i);
+//    		printf("tab_register[%d]=%d\n",(Address-1),Mapping->tab_registers[Address-1]);
+    	}
+    }
+
+    /*
+     * Encerrando os trabalhos
+     */
+    sqlite3_finalize(Statement);
+
+//    printf("CMDB_getStringData:Final\n");
+
+    return ret;
 }
 
-static bool CMDB_looped_query_continue(CMDatabase * Database){
-    Database->QueryIndex += 1;
-    bool ShouldContinue = (Database->OnQuery && Database->QueryIndex < Database->QueryMaxItens);
-    if(!ShouldContinue){
-        ShouldContinue = (sqlite3_step(Database->Statement) == SQLITE_ROW);
-        if(ShouldContinue){
-            Database->QueryIndex = 0;
-            Database->QueryMaxItens = sqlite3_column_count(Database->Statement);
-        }
-    }
-    Database->OnQuery = ShouldContinue;
-    return ShouldContinue;
-}
+int CMDB_get_batteryInfo(CMState *State) {
+	int ret = 0;
+	int nbColumns = 0;
+	int i = 0;
+	struct sqlite3_stmt *Statement;
+	char SQLQuery[] = "SELECT n_baterias_por_strings, n_strings FROM Modulo LIMIT 1";
 
-static QueryRet CMDB_looped_query_next(CMDatabase * Database){
-    QueryRet Return;
-    Return.HasData = false;
-    if(Database->QueryIndex < Database->QueryMaxItens){
-        const void * VData = sqlite3_column_text(Database->Statement,
-                                                 Database->QueryIndex);
-        if(VData){
-            Return.Text = std::string((const char*)VData);
-        }else{
-            Return.Text = std::string("");
-        }
-        Return.Column = std::string((const char *)sqlite3_column_name(Database->Statement,
-                                                                      Database->QueryIndex));
-        Return.HasData = true;
-    }
-    return Return;
-}
+//	printf("CMDB_get_batteryInfo:Inicio\n");
 
-bool CMDB_fetch_data(CMDatabase * Database, CMState * State){
-//	printf("CMDB_fetch_data\n");
-    bool Result = true;
-    /* Flavio Alves: simplificação da consulta */
-    //std::string SQLQuery("SELECT temperatura, impedancia, tensao, equalizacao, batstatus FROM DataLogRT");
+	/* Realizando busca */
+//	printf("Executando busca ...\n");
+	if(sqlite3_prepare_v2(SQLDatabase, SQLQuery,-1, &Statement, NULL) != SQLITE_OK){
+		printf("Failed to fetch data: %s\n", sqlite3_errmsg(SQLDatabase));
+		return -1;
+	}
 
-    std::string SQLQuery("SELECT temperatura, impedancia, tensao, equalizacao, batstatus FROM DataLogRT as RVAL");
-    SQLQuery += " WHERE CAST(SUBSTR(RVAL.string, 2, length(RVAL.string)) as integer) <= " + MAKE_STR(State->StringCount, int);
-    SQLQuery += " AND CAST(SUBSTR(RVAL.bateria, 2, length(RVAL.bateria)) as integer) <= " + MAKE_STR(State->BatteryCount, int);
-    SQLQuery += " ORDER BY CAST(SUBSTR(RVAL.string, 2, length(RVAL.string)) as integer),";
-    SQLQuery += " CAST(SUBSTR(RVAL.bateria, 2, length(RVAL.bateria)) as integer);";
-    
+	/* Buscando os resultados desejados */
+	while(sqlite3_step(Statement) != SQLITE_DONE) {
+		nbColumns = sqlite3_column_count(Statement);
+//		printf("Numero de colunas: %d\n",nbColumns);
+		if (nbColumns != 2) {
+			printf("Erro na leitura das colunas: %d\n",nbColumns);
+			ret = -1;
+			break;
+		}
+		State->BatteryCount = sqlite3_column_int(Statement, 0);
+		State->StringCount = sqlite3_column_int(Statement, 1);
+	}
 
-    int Index = 0;
-    QueryRet iterator = CMDB_looped_query_begin(Database, SQLQuery);
-    /* Flavio Alves: mudança para int */
-    State->LinearDataLogRT[Index++] = (int) atoi(iterator.Text.c_str());
-    Result &= iterator.HasData;
-    
-    while(CMDB_looped_query_continue(Database)){
-        iterator = CMDB_looped_query_next(Database);
-        /* Flavio Alves: mudança para int */
-        State->LinearDataLogRT[Index++] = (int) atoi(iterator.Text.c_str());
-        Result &= iterator.HasData;
-    }
-  
-    return Result;
-}
+	/* Resultado final */
+//	printf("BatteryCount = %d\n",State->BatteryCount);
+//	printf("StringCount  = %d\n",State->StringCount);
+	/* Sanity Check */
+	if ((State->BatteryCount == 0) || (State->StringCount == 0)) {
+		printf("ERRO: Valores nulos para BatteryCount ou StringCount\n");
+		ret = -1;
+	}
 
-static bool CMDB_set_configuration(CMDatabase * Database, CMState *State){
-    bool Updated = false;
-    std::string SQLQuery("SELECT * FROM " DATABASE_MODULO_DATA " LIMIT 1;");
-    QueryRet iterator;
-    std::map<std::string, int>::iterator MapIterator;
-    
-    iterator = CMDB_looped_query_begin(Database, SQLQuery);
-    
-    MapIterator = Database->ConfigurationMap.find(iterator.Column);
-        
-    if(MapIterator != Database->ConfigurationMap.end()){
-        MapIterator->second = atoi(iterator.Text.c_str()); 
-    }
+	/* Complementando com o numero fixo de campos que deve constar na tabela
+	 * modbus, por leitura de bateria.
+	 */
+	State->FieldCount = FIELDS_PASSED;
 
-    while(CMDB_looped_query_continue(Database)){
-        iterator = CMDB_looped_query_next(Database);
-        MapIterator = Database->ConfigurationMap.find(iterator.Column);
-        
-        if(MapIterator != Database->ConfigurationMap.end()){
-            MapIterator->second = atoi(iterator.Text.c_str()); 
-        }
-    }
-    
-    int BatteryCount = Database->ConfigurationMap["n_baterias_por_strings"];
-    int StringCount  = Database->ConfigurationMap["n_strings"]; 
-        
+	/*
+	 * Encerrando os trabalhos
+	 */
+	sqlite3_finalize(Statement);
 
-    if(State->BatteryCount != BatteryCount || StringCount != State->StringCount){
-        State->BatteryCount = BatteryCount;
-        State->StringCount  = StringCount;
-        if(State->LinearDataLogRT){
-            delete State->LinearDataLogRT;
-        }
-        
-        int TotalElementCount = State->StringCount * State->BatteryCount * FIELDS_PASSED;
-        int MemoryBlock = TotalElementCount; //each field takes 2 uint16_t (floats)
-        /* Flavio Alves: mudança de float para int */
-        State->LinearDataLogRT = new int[MemoryBlock];
-        State->FieldCount = FIELDS_PASSED;
-        memset(State->LinearDataLogRT, 0, sizeof(int) * MemoryBlock);
-        Updated = CMDB_fetch_data(Database, State);
-    }
-    
-    return Updated;
+//	printf("CMDB_get_batteryInfo:Final\n");
+
+	return ret;
 }
 
 
-CMDatabase * CMDB_new(const char *SourcePath){
-    CMDatabase *Database = new CMDatabase;
-    int Err = sqlite3_open(SourcePath, &Database->SQLDatabase);
+int CMDB_new(const char *SourcePath){
+	int ret = 0;
+
+    int Err = sqlite3_open(SourcePath, &SQLDatabase);
     if(Err != 0){
-        delete Database;
-        return nullptr; 
+        ret = -1;
     }
     
-    Database->ConfigurationMap["n_strings"] = -1;
-    Database->ConfigurationMap["n_baterias_por_strings"] = -1;
-    return Database;
-}
-
-bool CMDB_query_state(CMDatabase *Database, CMState *State){
-    return CMDB_set_configuration(Database, State);
+    return ret;
 }

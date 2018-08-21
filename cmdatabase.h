@@ -9,10 +9,9 @@ struct CMState{
     int StringCount;
     int BatteryCount;
     int FieldCount;
-    float * LinearDataLogRT;
 };
 
-CMDatabase *    CMDB_new(const char *SourcePath);
-bool            CMDB_query_state(CMDatabase * Database, CMState *State);
-bool            CMDB_fetch_data(CMDatabase * Database, CMState *State);
+int	CMDB_new(const char *SourcePath);
+int	CMDB_get_stringData(CMState * State, modbus_mapping_t *Mapping);
+int	CMDB_get_batteryInfo(CMState *State);
 #endif

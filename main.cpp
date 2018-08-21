@@ -1,10 +1,7 @@
 #include <modbus.h>
-#include <iostream>
 #include <errno.h>
-#include <sys/select.h>
 #include <cmdatabase.h>
 #include <timer.h>
-#include <pthread.h>
 #include <unistd.h>
 
 #define MODBUS_START_ADDRESS 20000
@@ -19,147 +16,140 @@
 
 
 /*
- * Mutex controlls race conditions on the mapping structure for libmodbus
-*/
-static pthread_mutex_t MappingMutex;
-
-/*
  * Our definition of Server: a modbus context, a socket and some mapping
  * information
 */
 typedef struct{
     modbus_t *Context; //tcp context
-    uint8_t *Query; //query arrived
+    uint8_t Query[MODBUS_TCP_MAX_ADU_LENGTH]; //query arrived
     int HeaderLength; 
     int ClientSocket; //socket currently being used
     modbus_mapping_t *Mapping; //main mapping structure
 }Server_t;
 
-/*
- * This is basic pointer to a object that [can] start a thread 
- * so that we can time updates from the SQL database
-*/
-Later *LaterCall;
-
+static CMState State;
 
 /*
  * Handles a connection. Whenever our socket receives a client 
  * we handled the connection here untill it disconnects
 */
-int server_handle_connection(Server_t *Server){
+int server_handle_connection(Server_t *Server, CMState *State){
     int rc = 0;
     bool finished = false;
+    int ElementCount = 0;
+    int currentBatteryCount = State->BatteryCount;
+    int currentStringCount = State->StringCount;
+
+//    printf("server_handle_connection start\n");
+
+    /* Roda indefinidamente */
     while(!finished){
+//        printf("Receive ...\n");
+    	/* RECEIVE */
         do{
             rc = modbus_receive(Server->Context, Server->Query);
-            if(rc > 0){
-                pthread_mutex_lock(&MappingMutex);
-                modbus_reply(Server->Context, Server->Query, rc, Server->Mapping);
-                pthread_mutex_unlock(&MappingMutex);
-            }
-        }while(rc == 0);
-        
-    
-        if(rc == -1){
-            std::cout << "Connection: " << modbus_strerror(errno) << std::endl;
+        } while(rc == 0);
+        if(rc == -1) {
+        	printf("Erro modbus_receive()\n");
             break;
         }
-    }
-    return 0;
-}
 
-/*
- * Clears the current Mapping being used by the Server and fill it 
- * with whatever is in the State, it should have come from the Database
- * handler structure
-*/
-void server_fill_mapping(Server_t * Server, CMState * State){
-//	printf("Inicializando tabela MODBUS\n");
-
-    if(Server->Mapping != 0){
-        modbus_mapping_free(Server->Mapping);
-    }
-    int Address = 0;
-    int ElementCount = State->BatteryCount * State->StringCount * State->FieldCount;
-    int CountInUint16 = ElementCount  * 2; //everything is in floats, so double the uint16_t
-    Server->Mapping = modbus_mapping_new_start_address(0, 0, 0, 0, MODBUS_START_ADDRESS, CountInUint16 + 2, 0, 0);
-    
-    Server->Mapping->tab_registers[Address++] = (uint16_t) State->BatteryCount;
-    Server->Mapping->tab_registers[Address++] = (uint16_t) State->StringCount;
-    
-    for(int i = 0; i < ElementCount; i += 1){
-        /* Flavio Alves: mudança de float para int 
-         * float exigia 32 bits. O inteiro que vamos fornecer precisa de
-         * apenas 16 bits. Então a regra de atualização muda também, sem
-         * precisar mudar os registros de 2 em 2.
-         */
-        int TargetAddr = Address + i;
-        Server->Mapping->tab_registers[TargetAddr] = (uint16_t)State->LinearDataLogRT[i];
-        // modbus_set_float_abcd(State->LinearDataLogRT[i],
-                    //    &(Server->Mapping->tab_registers[TargetAddr]));
-    }
-
-//    printf("Tabela inicializada\n");
-}
-
-/*
- * Callback invoked everytime the timer defined by LaterCall finishes
-*/
-void __timed_update(Server_t * Server, CMState * State, CMDatabase * Database){
-    pthread_mutex_lock(&MappingMutex); //prevent any request during this time
-    if(!CMDB_query_state(Database, State)){ //check if there were some configuration changes in Web
         /*
-         * In case there were no updates we need to manually update the values from the Mapping
-         * When the update accours the State is automaticly updated
-        */
-        CMDB_fetch_data(Database, State);
+         * Atualiza informações da tabela para preenchimento da resposta
+         */
+//        printf("Update table ...\n");
+        if (CMDB_get_stringData(State,Server->Mapping) == -1) {
+        	printf("Erro atualização tabela modbus\n");
+        	modbus_mapping_free(Server->Mapping);
+        	modbus_free(Server->Context);
+        	break;
+        }
+
+//        printf("Reply ...\n");
+        /* REPLY */
+        rc = modbus_reply(Server->Context, Server->Query, rc, Server->Mapping);
+        if (rc == -1) {
+        	printf("Erro modbus_reply()\n");
+        	break;
+        }
+
+//        printf("Check update ...\n");;
+        /* ATUALIZA TABELA */
+        CMDB_get_batteryInfo(State);
+        if ((State->BatteryCount != currentBatteryCount) || (State->StringCount != currentStringCount)) {
+        	printf("Reset registers ...\n");
+        	ElementCount = State->BatteryCount * State->StringCount;
+        	/* Limpa a tabela atual */
+        	modbus_mapping_free(Server->Mapping);
+        	/* Cria uma nova tabela, com o tamanho atualizado */
+        	Server->Mapping = modbus_mapping_new_start_address(0, 0, 0, 0, MODBUS_START_ADDRESS, ElementCount + 2, 0, 0);
+        	if (Server->Mapping == NULL) {
+        		printf("Failed to allocate the mapping\n");
+        		modbus_free(Server->Context);
+        		break;
+        	}
+        }
+
+        /*
+         * Atualiza contador
+         */
+        currentBatteryCount = State->BatteryCount;
+        currentStringCount  = State->StringCount;
     }
-    /*
-     * Creates a new mapping from the fetched values
-    */
-    server_fill_mapping(Server, State);
-    pthread_mutex_unlock(&MappingMutex); //allow requests to come now
-    /*
-     * Restart magic timer
-    */
-    delete LaterCall;
-    LaterCall = new Later(FETCH_TIMEOUT, true, &__timed_update, Server, State, Database);
+
+//    printf("server_handle_connection end");
+
+    return 0;
 }
 
 /*
  * Inits the modbus module and the timer object
 */
-int init_modbus(CMDatabase *Database, CMState *State){
-    Server_t *Server = new Server_t;
-    Server->Context = modbus_new_tcp(nullptr, MODBUS_TCP_DEFAULT_PORT);
-    if(!Server->Context){
-        std::cout << "Failed to created Modbus TCP context" << std::endl;
+int start_modbus(CMState *State){
+    Server_t Server;
+    int ElementCount = 0;
+
+    Server.Context = modbus_new_tcp(nullptr, MODBUS_TCP_DEFAULT_PORT);
+    if(!Server.Context){
+    	printf("Failed to create Modbus TCP context\n");
         return -1; 
     } 
     
-    if(pthread_mutex_init(&MappingMutex, NULL) != 0){
-        std::cout << "Failed to initialize Mapping Mutex, good luck" << std::endl;
+    // Configura o debug da libmodbus
+//    modbus_set_debug(Server.Context, TRUE);
+
+    /*
+     * Inicializa a tabela de registradores
+     */
+    ElementCount = State->BatteryCount * State->StringCount * State->FieldCount;
+    Server.Mapping = modbus_mapping_new_start_address(0, 0, 0, 0, MODBUS_START_ADDRESS, ElementCount + 2, 0, 0);
+    if (Server.Mapping == NULL) {
+    	printf("Failed to allocate the mapping: %d\n",modbus_strerror(errno));
+        modbus_free(Server.Context);
+        return -1;
     }
 
-    Server->Mapping = 0;
+    /* Preenche a memória */
+    if (CMDB_get_stringData(State, Server.Mapping) == -1) {
+    	printf("Failed go fill modbus table with database information\n");;
+    	modbus_mapping_free(Server.Mapping);
+    	modbus_free(Server.Context);
+    	return -1;
+    }
 
-    server_fill_mapping(Server, State);
-
-    Server->ClientSocket = modbus_tcp_listen(Server->Context, MAX_CONNECTIONS);
-    Server->Query = new uint8_t[MODBUS_TCP_MAX_ADU_LENGTH];
-    Server->HeaderLength = modbus_get_header_length(Server->Context);
-    
-    LaterCall = new Later(FETCH_TIMEOUT, true, &__timed_update, Server, State, Database);
-    if(Server->ClientSocket == -1){
-        std::cout << "Failed to listen : " << modbus_strerror(errno) << std::endl;
+    Server.ClientSocket = modbus_tcp_listen(Server.Context, MAX_CONNECTIONS);
+    if(Server.ClientSocket == -1){
+        printf("Failed to listen : %d\n",modbus_strerror(errno));
         return -1;
     }
     
+    Server.HeaderLength = modbus_get_header_length(Server.Context);
+
     while(1){
-        std::cout << "Listening for connection" << std::endl;
-        modbus_tcp_accept(Server->Context, &Server->ClientSocket);
-        (void) server_handle_connection(Server);
-        std::cout << "Connection ended" << std::endl;
+        printf("Listening for connection\n");
+        modbus_tcp_accept(Server.Context, &Server.ClientSocket);
+        server_handle_connection(&Server, State);
+        printf("Connection ended\n");
     }   
 }
 
@@ -171,7 +161,7 @@ void WaitDatabase(const char *path){
     int exists = exist_file(path);
     int count = 0;
     while(!exists){
-        std::cout << "Waiting for Database creation [" << count++ << "]" << std::endl;
+        printf("Waiting for Database creation [%d]\n",count++);
         sleep(1);
         exists = exist_file(path);
     }
@@ -181,22 +171,19 @@ void WaitDatabase(const char *path){
  * Entry point
 */
 int main(int argc, char **argv){
-//	printf("Inicio da execução\n");
-    WaitDatabase(DATABASE_PATH);
+	WaitDatabase(DATABASE_PATH);
 
-//    printf("Inicializando banco de dados\n");
-    CMDatabase *Database = CMDB_new(DATABASE_PATH);
-    CMState State;
-    State.LinearDataLogRT = 0;
+	if (CMDB_new(DATABASE_PATH) == -1) {
+		printf("Erro na inicialização do Banco de Dados\n");
+		return 1;
+	}
 
-//    printf("Realizando primeira busca no banco de dados\n");
-    if(!CMDB_query_state(Database, &State)){
-        std::cout << "Failed to perform SQL Linearization" << std::endl;
-        return -1;
-    }
+	/* Realiza uma busca no banco de dados e obtem a informação de quantidade de
+	 * strings e de baterias por string do projeto.
+	 */
+	CMDB_get_batteryInfo(&State);
+	printf("StringCount: %d|BatteryCount: %d\n",State.StringCount,State.BatteryCount);
+	start_modbus(&State);
 
-//    printf("Inicializando MODBUS\n");
-    (void) init_modbus(Database, &State);
-    
-    return 0;
+	return 0;
 }

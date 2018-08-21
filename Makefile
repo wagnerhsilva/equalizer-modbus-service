@@ -1,6 +1,7 @@
 TARGETS=main.o cmdatabase.o
-INC=-I . -lsqlite3 -lm libmodbus.so.5 -lpthread
+INC=-I .
 OPT=-O0 -std=c++11
+FLAGS=-lsqlite3 -lm libmodbus.so.5
 DEBUG=-g
 
 .PHONY: all clean rebuild release
@@ -12,10 +13,10 @@ release: rebuild clean_partial
 rebuild: clean modbus
 
 %.o: %.cpp
-	$(CXX) $(INC) $(CMP) $(OPT) $(DEBUG) -c $^
+	$(CC) $(INC) $(CMP) $(OPT) $(DEBUG) -c $^
 
 modbus: $(TARGETS)
-	$(CXX) $(OPT) $^ -o modbus $(INC) $(DEBUG)
+	$(CC) $(OPT) $^ -o modbus $(INC) $(FLAGS) $(DEBUG)
 
 clean:
 	rm -rf *o *.txt modbus

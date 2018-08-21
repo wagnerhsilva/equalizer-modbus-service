@@ -1,4 +1,7 @@
 eclipse.preferences.version=1
+environment/project/cdt.managedbuild.toolchain.gnu.cross.base.680839577/CC/delimiter=\:
+environment/project/cdt.managedbuild.toolchain.gnu.cross.base.680839577/CC/operation=append
+environment/project/cdt.managedbuild.toolchain.gnu.cross.base.680839577/CC/value=arm-poky-linux-gnueabi-gcc -march\=armv7ve -marm -mfpu\=neon -mfloat-abi\=hard -mcpu\=cortex-a7 --sysroot\=/opt/equalizer-distro/1.0/sysroots/cortexa7hf-neon-poky-linux-gnueabi
 environment/project/cdt.managedbuild.toolchain.gnu.cross.base.680839577/CXX/delimiter=\:
 environment/project/cdt.managedbuild.toolchain.gnu.cross.base.680839577/CXX/operation=append
 environment/project/cdt.managedbuild.toolchain.gnu.cross.base.680839577/CXX/value=arm-poky-linux-gnueabi-g++ -march\=armv7ve -marm -mfpu\=neon -mfloat-abi\=hard -mcpu\=cortex-a7 --sysroot\=/opt/equalizer-distro/1.0/sysroots/cortexa7hf-neon-poky-linux-gnueabi
