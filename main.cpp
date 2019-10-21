@@ -3,11 +3,21 @@
 #include <cmdatabase.h>
 #include <timer.h>
 #include <unistd.h>
+#include <fcntl.h>
+#include <sys/mman.h>
 
-#define MODBUS_START_ADDRESS 20000
+#define MODBUS_START_ADDRESS 0/*20000*/
 #define MAX_CONNECTIONS 1
 #define FETCH_TIMEOUT 10 * 1000 // 1min
 #define DATABASE_PATH "/var/www/equalizer-api/equalizer-api/equalizerdb"
+
+/*
+ * Estrutura da memoria compartilhada
+ */
+#define SHARED_MEM_NAME "/posix-shared-mem"
+
+Database_SharedMem_t *shared_mem_ptr;
+int fd_shm;
 
 /*
  * Simple module that reads from SQL database (sqlite3), translates the data
@@ -58,7 +68,7 @@ int server_handle_connection(Server_t *Server, CMState *State){
          * Atualiza informações da tabela para preenchimento da resposta
          */
 //        printf("Update table ...\n");
-        if (CMDB_get_stringData(State,Server->Mapping) == -1) {
+        if (CMDB_get_stringData(State,Server->Mapping,shared_mem_ptr) == -1) {
         	printf("Erro atualização tabela modbus\n");
         	modbus_mapping_free(Server->Mapping);
         	modbus_free(Server->Context);
@@ -121,7 +131,7 @@ int start_modbus(CMState *State){
     /*
      * Inicializa a tabela de registradores
      */
-    ElementCount = State->BatteryCount * State->StringCount * State->FieldCount;
+    ElementCount = 11000 + State->BatteryCount * State->StringCount * State->FieldCount;
     Server.Mapping = modbus_mapping_new_start_address(0, 0, 0, 0, MODBUS_START_ADDRESS, ElementCount + 2, 0, 0);
     if (Server.Mapping == NULL) {
     	printf("Failed to allocate the mapping: %d\n",modbus_strerror(errno));
@@ -130,7 +140,7 @@ int start_modbus(CMState *State){
     }
 
     /* Preenche a memória */
-    if (CMDB_get_stringData(State, Server.Mapping) == -1) {
+    if (CMDB_get_stringData(State, Server.Mapping, shared_mem_ptr) == -1) {
     	printf("Failed go fill modbus table with database information\n");;
     	modbus_mapping_free(Server.Mapping);
     	modbus_free(Server.Context);
@@ -178,12 +188,30 @@ int main(int argc, char **argv){
 		return 1;
 	}
 
+    // Get shared memory
+	if ((fd_shm = shm_open(SHARED_MEM_NAME, O_RDWR, 0)) == -1) {
+		printf("Error shm_open\n");
+        return 1;
+    }
+
+	if ((shared_mem_ptr = (Database_SharedMem_t*)mmap(NULL, sizeof(Database_SharedMem_t),
+			PROT_READ | PROT_WRITE, MAP_SHARED, fd_shm, 0)) == MAP_FAILED) {
+		printf("Error mmap\n");
+        return 1;
+    }
+
 	/* Realiza uma busca no banco de dados e obtem a informação de quantidade de
 	 * strings e de baterias por string do projeto.
 	 */
 	CMDB_get_batteryInfo(&State);
 	printf("StringCount: %d|BatteryCount: %d\n",State.StringCount,State.BatteryCount);
 	start_modbus(&State);
+
+    if (munmap(shared_mem_ptr, sizeof(Database_SharedMem_t)) == -1) {
+        printf("Error munmap\n");
+        return 1;
+    }
+		
 
 	return 0;
 }

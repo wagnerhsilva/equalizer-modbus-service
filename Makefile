@@ -1,7 +1,7 @@
 TARGETS=main.o cmdatabase.o
 INC=-I .
 OPT=-O0 -std=c++11
-FLAGS=-lsqlite3 -lm libmodbus.so.5
+FLAGS=-lrt -lpthread -lsqlite3 -lm libmodbus.so.5
 DEBUG=-g
 
 .PHONY: all clean rebuild release

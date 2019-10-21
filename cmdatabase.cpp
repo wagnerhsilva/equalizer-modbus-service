@@ -13,7 +13,7 @@
 
 static sqlite3 *SQLDatabase;
 
-int CMDB_get_stringData(CMState * State, modbus_mapping_t *Mapping) {
+int CMDB_get_stringData(CMState * State, modbus_mapping_t *Mapping, Database_SharedMem_t *sharedMem) {
     int ret = 0;
     int i = 0;
     int nbElements = State->BatteryCount*State->StringCount;
@@ -22,7 +22,29 @@ int CMDB_get_stringData(CMState * State, modbus_mapping_t *Mapping) {
     char SQLQuery[512] = { 0 };
     struct sqlite3_stmt *Statement;
 
-//    printf("CMDB_getStringData:Inicio\n");
+	// printf("CMDB_getStringData:Inicio\n");
+
+	/*
+	 * Incluindo o conteudo da memoria compartilhada. A partir da posicao 0
+	 * Os primeiros registradores sao os alarmes principais
+	 */
+	for(i=0;i<6;i++) {
+		Mapping->tab_registers[Address++] = sharedMem->alarms[i];
+	}
+	/*
+	 * Endereco inicial dos status de timeout e feito a partir do endereco
+	 * 10200.
+	 */
+	Address = 10200;
+	for(i=0;i<10240;i++) {
+		Mapping->tab_registers[Address++] = sharedMem->read_state[i];
+	}
+
+	/*
+	 * As proximas informacoes serao armazenadas a partir do endereco 11000,
+	 * e nao mais 20000 como era antes.
+	 */
+	Address = 11000;
 
     /*
      * Construindo a consulta SQL
