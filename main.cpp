@@ -132,6 +132,7 @@ int start_modbus(CMState *State){
      * Inicializa a tabela de registradores
      */
     ElementCount = 11000 + State->BatteryCount * State->StringCount * State->FieldCount;
+    // printf("Tamanho de registradores: %d\n",ElementCount);
     Server.Mapping = modbus_mapping_new_start_address(0, 0, 0, 0, MODBUS_START_ADDRESS, ElementCount + 2, 0, 0);
     if (Server.Mapping == NULL) {
     	printf("Failed to allocate the mapping: %d\n",modbus_strerror(errno));
@@ -140,12 +141,14 @@ int start_modbus(CMState *State){
     }
 
     /* Preenche a memória */
+    printf("Preenchendo memoria ... ");
     if (CMDB_get_stringData(State, Server.Mapping, shared_mem_ptr) == -1) {
     	printf("Failed go fill modbus table with database information\n");;
     	modbus_mapping_free(Server.Mapping);
     	modbus_free(Server.Context);
     	return -1;
     }
+    printf("OK\n");
 
     Server.ClientSocket = modbus_tcp_listen(Server.Context, MAX_CONNECTIONS);
     if(Server.ClientSocket == -1){
@@ -199,6 +202,8 @@ int main(int argc, char **argv){
 		printf("Error mmap\n");
         return 1;
     }
+
+    printf("memoria compartilhada iniciada\n");
 
 	/* Realiza uma busca no banco de dados e obtem a informação de quantidade de
 	 * strings e de baterias por string do projeto.
