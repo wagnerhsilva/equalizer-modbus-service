@@ -13,59 +13,48 @@
 
 static sqlite3 *SQLDatabase;
 
-int CMDB_get_stringData(CMState * State, modbus_mapping_t *Mapping, Database_SharedMem_t *sharedMem) {
+int CMDB_get_alarmData(CMState * State, modbus_mapping_t *Mapping, Database_SharedMem_t *sharedMem) {
+	int Address = 0;
+	int i = 0;
+	int nbRegisters = State->BatteryCount * State->StringCount;
+
+	/* Primeiros registros sao os fixos */
+	Mapping->tab_registers[Address++] = (uint16_t) State->BatteryCount;
+    Mapping->tab_registers[Address++] = (uint16_t) State->StringCount;
+	Mapping->tab_registers[Address++] = sharedMem->barramento;
+	Mapping->tab_registers[Address++] = sharedMem->target;
+	Mapping->tab_registers[Address++] = sharedMem->disco;
+
+	/* Alarmes relacionados a cada bateria */
+	for(i=0;i<nbRegisters;i++) {
+		Mapping->tab_registers[Address++] = sharedMem->bat_alarms[i].tensao;
+		Mapping->tab_registers[Address++] = sharedMem->bat_alarms[i].temperatura;
+		Mapping->tab_registers[Address++] = sharedMem->bat_alarms[i].impedancia;
+		Mapping->tab_registers[Address++] = sharedMem->bat_alarms[i].timeout;
+		/* Pula os enderecos esperados para as leituras */
+		Address += 5;
+	}
+
+	return 0;
+}
+
+int CMDB_get_stringData(CMState * State, modbus_mapping_t *Mapping) {
     int ret = 0;
     int i = 0;
-    int nbElements = State->BatteryCount*State->StringCount;
-    int Address = 0;
+    int nbElements = State->BatteryCount * State->StringCount;
+    int Address = 9; /* Considerando offset dos 5 primeiros registros + 4 primeiros alarmes */
     int nbColumns = 0;
     char SQLQuery[512] = { 0 };
     struct sqlite3_stmt *Statement;
 
-	// printf("CMDB_getStringData:Inicio\n");
-
-	/*
-	 * Incluindo o conteudo da memoria compartilhada. A partir da posicao 0
-	 * Os primeiros registradores sao os alarmes principais
-	 */
-	// printf("Preenchendo alarmes\n");
-	for(i=0;i<6;i++) {
-		Mapping->tab_registers[Address++] = sharedMem->alarms[i];
-	}
-	/*
-	 * Endereco inicial dos status de timeout e feito a partir do endereco
-	 * 200.
-	 */
-	// printf("Preenchendo timeouts\n");
-	Address = 200;
-	for(i=0;i<10240;i++) {
-		Mapping->tab_registers[Address++] = sharedMem->read_state[i];
-	}
-
-	// printf("Preenchendo status\n");
-	/*
-	 * As proximas informacoes serao armazenadas a partir do endereco 11000,
-	 * e nao mais 20000 como era antes.
-	 */
-	Address = 11000;
     /*
      * Construindo a consulta SQL
      */
     sprintf(SQLQuery,"SELECT temperatura, impedancia, tensao, equalizacao, batstatus FROM DataLogRT LIMIT %d;",nbElements);
-//    printf("String SQL:%s\n",SQLQuery);
-
-    /*
-     * Inicializando a tabela com os valores ja conhecidos
-     */
-    Mapping->tab_registers[Address++] = (uint16_t) State->BatteryCount;
-//    printf("tab_register[%d]=%d\n",(Address-1),Mapping->tab_registers[Address-1]);
-    Mapping->tab_registers[Address++] = (uint16_t) State->StringCount;
-//    printf("tab_register[%d]=%d\n",(Address-1),Mapping->tab_registers[Address-1]);
 
     /*
      * Executando a consulta
      */
-//    printf("Executando busca ...\n");
     if(sqlite3_prepare_v2(SQLDatabase, SQLQuery,-1, &Statement, NULL) != SQLITE_OK){
     	printf("Failed to fetch data: %s\n", sqlite3_errmsg(SQLDatabase));
     	return -1;
@@ -76,7 +65,6 @@ int CMDB_get_stringData(CMState * State, modbus_mapping_t *Mapping, Database_Sha
      */
     while(sqlite3_step(Statement) != SQLITE_DONE) {
     	nbColumns = sqlite3_column_count(Statement);
-//    	printf("Numero de colunas: %d\n",nbColumns);
     	/* Sanity check */
     	if (nbColumns != 5) {
     		printf("Erro na recuperacao da linha do banco de dados: %d\n",nbColumns);
@@ -89,16 +77,15 @@ int CMDB_get_stringData(CMState * State, modbus_mapping_t *Mapping, Database_Sha
     	for (i=0;i<nbColumns;i++) {
 			// printf("Preenchendo posicao %d\n",Address);
     		Mapping->tab_registers[Address++] = (int)sqlite3_column_double(Statement, i);
-//    		printf("tab_register[%d]=%d\n",(Address-1),Mapping->tab_registers[Address-1]);
     	}
+		/* Para o proximo registro, considerar o offset de 4 posicoes de alarmes */
+		Address += 4;
     }
 
     /*
      * Encerrando os trabalhos
      */
     sqlite3_finalize(Statement);
-
-//    printf("CMDB_getStringData:Final\n");
 
     return ret;
 }

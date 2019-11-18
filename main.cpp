@@ -6,10 +6,10 @@
 #include <fcntl.h>
 #include <sys/mman.h>
 
-#define MODBUS_START_ADDRESS 0/*20000*/
-#define MAX_CONNECTIONS 1
-#define FETCH_TIMEOUT 10 * 1000 // 1min
-#define DATABASE_PATH "/var/www/equalizer-api/equalizer-api/equalizerdb"
+#define MODBUS_START_ADDRESS    0
+#define MAX_CONNECTIONS         1
+#define FETCH_TIMEOUT           10 * 1000 // 1min
+#define DATABASE_PATH           "/var/www/equalizer-api/equalizer-api/equalizerdb"
 
 /*
  * Estrutura da memoria compartilhada
@@ -49,54 +49,83 @@ int server_handle_connection(Server_t *Server, CMState *State){
     int ElementCount = 0;
     int currentBatteryCount = State->BatteryCount;
     int currentStringCount = State->StringCount;
-
-//    printf("server_handle_connection start\n");
+    int header_lenght = modbus_get_header_length(Server->Context);
+    int requested_address = 0;
 
     /* Roda indefinidamente */
     while(!finished){
-//        printf("Receive ...\n");
     	/* RECEIVE */
-        do{
+        do {
             rc = modbus_receive(Server->Context, Server->Query);
         } while(rc == 0);
-        if(rc == -1) {
+        if (rc == -1) {
         	printf("Erro modbus_receive()\n");
             break;
         }
 
-        /*
-         * Atualiza informações da tabela para preenchimento da resposta
-         */
-//        printf("Update table ...\n");
-        if (CMDB_get_stringData(State,Server->Mapping,shared_mem_ptr) == -1) {
-        	printf("Erro atualização tabela modbus\n");
-        	modbus_mapping_free(Server->Mapping);
-        	modbus_free(Server->Context);
-        	break;
+        /* Checa se e o comando correto */
+        if (Server->Query[header_lenght] == 0x03) {
+            /* Read Registers - o caso configurado */
+            requested_address = MODBUS_GET_INT16_FROM_INT8(Server->Query,header_lenght+1);
+            /*
+             * Atualiza informações da tabela para preenchimento da resposta
+             */
+            if (CMDB_get_alarmData(State,Server->Mapping,shared_mem_ptr) == -1) {
+                // printf("Erro atualização tabela modbus\n");
+                modbus_mapping_free(Server->Mapping);
+                modbus_free(Server->Context);
+                break;
+            }
+            if (CMDB_get_stringData(State,Server->Mapping) == -1) {
+                // printf("Erro atualização tabela modbus\n");
+                modbus_mapping_free(Server->Mapping);
+                modbus_free(Server->Context);
+                break;
+            }
         }
 
-//        printf("Reply ...\n");
         /* REPLY */
-        rc = modbus_reply(Server->Context, Server->Query, rc, Server->Mapping);
+        rc = modbus_reply(Server->Context, Server->Query, rc, mb_mapping);
         if (rc == -1) {
-        	printf("Erro modbus_reply()\n");
-        	break;
+            printf("Erro modbus_reply()\n");
+            break;
         }
 
-//        printf("Check update ...\n");;
-        /* ATUALIZA TABELA */
+        /* 
+         * ATUALIZA TABELA 
+         */
         CMDB_get_batteryInfo(State);
         if ((State->BatteryCount != currentBatteryCount) || (State->StringCount != currentStringCount)) {
         	printf("Reset registers ...\n");
-        	ElementCount = State->BatteryCount * State->StringCount;
-        	/* Limpa a tabela atual */
-        	modbus_mapping_free(Server->Mapping);
+        	/* Limpa as tabelas atuais */
+            modbus_mapping_free(Server->AlarmMapping);
+        	modbus_mapping_free(Server->InfoMapping);
+            /* Mapeia a tabela de alarmes */
+            ElementCount = 3 + State->BatteryCount * State->StringCount * 4;
+            printf("Alarm setup: ElementCount = %d\n",ElementCount);
+            if (ElementCount >= 20000) {
+                printf("ERRO: Quantidade de registros a serem criados e superior a 20000: %d\n", ElementCount);
+                return -1;
+            }
+            Server->AlarmMapping = modbus_mapping_new_start_address(0, 0, 0, 0, MODBUS_START_ADDRESS_ALARMS, ElementCount, 0, 0);
+            if (Server->AlarmMapping == NULL) {
+                printf("Failed to allocate the mapping for alarm data: %d\n",modbus_strerror(errno));
+                return -1;
+            }
+            /* Mapeia tabela de informacoes */
+            ElementCount = State->BatteryCount * State->StringCount * State->FieldCount;
         	/* Cria uma nova tabela, com o tamanho atualizado */
-        	Server->Mapping = modbus_mapping_new_start_address(0, 0, 0, 0, MODBUS_START_ADDRESS, ElementCount + 2, 0, 0);
-        	if (Server->Mapping == NULL) {
+            printf("Info setup: ElementCount = %d\n",ElementCount);
+            if (ElementCount >= 30000) {
+                printf("ERRO: Quantidade de registros a serem criados e superior a 30000: %d\n", ElementCount);
+                modbus_mapping_free(Server->AlarmMapping);
+                return -1;
+            }
+        	Server->InfoMapping = modbus_mapping_new_start_address(0, 0, 0, 0, MODBUS_START_ADDRESS_INFO, ElementCount + 2, 0, 0);
+        	if (Server->InfoMapping == NULL) {
         		printf("Failed to allocate the mapping\n");
-        		modbus_free(Server->Context);
-        		break;
+                modbus_mapping_free(Server->AlarmMapping);
+        		return -1;
         	}
         }
 
@@ -106,8 +135,6 @@ int server_handle_connection(Server_t *Server, CMState *State){
         currentBatteryCount = State->BatteryCount;
         currentStringCount  = State->StringCount;
     }
-
-//    printf("server_handle_connection end");
 
     return 0;
 }
@@ -126,29 +153,66 @@ int start_modbus(CMState *State){
     } 
     
     // Configura o debug da libmodbus
-//    modbus_set_debug(Server.Context, TRUE);
+   modbus_set_debug(Server.Context, TRUE);
 
     /*
      * Inicializa a tabela de registradores
+     * Dados de alarmes
      */
-    ElementCount = 11000 + State->BatteryCount * State->StringCount * State->FieldCount;
-    // printf("Tamanho de registradores: %d\n",ElementCount);
-    Server.Mapping = modbus_mapping_new_start_address(0, 0, 0, 0, MODBUS_START_ADDRESS, ElementCount + 2, 0, 0);
-    if (Server.Mapping == NULL) {
-    	printf("Failed to allocate the mapping: %d\n",modbus_strerror(errno));
+    ElementCount = 3 + State->BatteryCount * State->StringCount * 4;
+    printf("Alarm setup: ElementCount = %d\n",ElementCount);
+    if (ElementCount >= 20000) {
+        printf("ERRO: Quantidade de registros a serem criados e superior a 20000: %d\n", ElementCount);
+        modbus_free(Server.Context);
+        return -1;
+    }
+    
+    Server.AlarmMapping = modbus_mapping_new_start_address(0, 0, 0, 0, MODBUS_START_ADDRESS_ALARMS, ElementCount, 0, 0);
+    if (Server.AlarmMapping == NULL) {
+    	printf("Failed to allocate the mapping for alarm data: %d\n",modbus_strerror(errno));
         modbus_free(Server.Context);
         return -1;
     }
 
     /* Preenche a memória */
-    printf("Preenchendo memoria ... ");
-    if (CMDB_get_stringData(State, Server.Mapping, shared_mem_ptr) == -1) {
+    if (CMDB_get_alarmData(State, Server.AlarmMapping, shared_mem_ptr) == -1) {
     	printf("Failed go fill modbus table with database information\n");;
-    	modbus_mapping_free(Server.Mapping);
+    	modbus_mapping_free(Server.AlarmMapping);
     	modbus_free(Server.Context);
     	return -1;
     }
-    printf("OK\n");
+
+    /*
+     * Inicializa a tabela de registradores
+     * Dados gerais do equipamento
+     */
+    ElementCount = State->BatteryCount * State->StringCount * State->FieldCount + 2;
+    printf("Info setup: ElementCount = %d\n",ElementCount);
+    if (ElementCount >= 30000) {
+        printf("ERRO: Quantidade de registros a serem criados e superior a 30000: %d\n", ElementCount);
+        modbus_mapping_free(Server.AlarmMapping);
+        modbus_free(Server.Context);
+        return -1;
+    }
+
+    printf("Mapeando ...\n");
+    Server.InfoMapping = modbus_mapping_new_start_address(0, 0, 0, 0, MODBUS_START_ADDRESS_INFO, ElementCount, 0, 0);
+    if (Server.InfoMapping == NULL) {
+    	printf("Failed to allocate the mapping for info data: %d\n",modbus_strerror(errno));
+        modbus_mapping_free(Server.AlarmMapping);
+        modbus_free(Server.Context);
+        return -1;
+    }
+    printf("Mapeado ...\n");
+
+    /* Preenche a memória */
+    if (CMDB_get_stringData(State, Server.InfoMapping) == -1) {
+    	printf("Failed go fill modbus table with database information\n");
+        modbus_mapping_free(Server.AlarmMapping);
+    	modbus_mapping_free(Server.InfoMapping);
+    	modbus_free(Server.Context);
+    	return -1;
+    }
 
     Server.ClientSocket = modbus_tcp_listen(Server.Context, MAX_CONNECTIONS);
     if(Server.ClientSocket == -1){
