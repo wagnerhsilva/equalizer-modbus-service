@@ -7,7 +7,7 @@
 
 #define OUTPUT_CONSOLE		0
 
-int DEBUG = 1;
+int DEBUG = 0;
 FILE *fp = NULL;
 
 static int firstpass = 1;

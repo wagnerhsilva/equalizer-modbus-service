@@ -94,7 +94,9 @@ int busca_strings(modbus_mapping_t *Mapping, int num_baterias, int num_strings) 
 int busca_alarmes(modbus_mapping_t *Mapping, Database_SharedMem_t *sharedMem, int num_baterias, int num_strings) {
     int Address = 0;
 	int i = 0;
-	int nbRegisters = num_strings * num_strings;
+	int nbRegisters = num_baterias * num_strings;
+
+    LOG("busca_alarmes: nb_registers = %d * %d = %d\n",num_baterias, num_strings, nbRegisters);
 
 	/* Primeiros registros sao os fixos */
 	Mapping->tab_registers[Address++] = (uint16_t) num_baterias;
@@ -109,8 +111,6 @@ int busca_alarmes(modbus_mapping_t *Mapping, Database_SharedMem_t *sharedMem, in
 		Mapping->tab_registers[Address++] = sharedMem->bat_alarms[i].temperatura;
 		Mapping->tab_registers[Address++] = sharedMem->bat_alarms[i].impedancia;
 		Mapping->tab_registers[Address++] = sharedMem->bat_alarms[i].timeout;
-		/* Pula os enderecos esperados para as leituras */
-		Address += 5;
 	}
 
 	return 0;
@@ -214,22 +214,20 @@ int main(void) {
      * Inicializando a memoria compartilhada
      */
     LOG("Inicializando a memoria compartilhada (alarmes)\n");
-    while (fd_shm == -1) {
-        if ((fd_shm = shm_open(SHARED_MEM_NAME, O_RDWR, 0)) == -1) {
-		    LOG("Error shm_open. Aguardando criacao\n");
-            sleep(2);
-        }
+    if ((fd_shm = shm_open (SHARED_MEM_NAME, O_RDWR | O_CREAT, 0660)) == -1) {
+        LOG("Error shm_open. Encerrando\n");
+        return 1;
     }
 
-    LOG("Mapeando variaveis\n");
-    while(!mapped) {
-        if ((shared_mem_ptr = (Database_SharedMem_t*)mmap(NULL, sizeof(Database_SharedMem_t),
-                PROT_READ | PROT_WRITE, MAP_SHARED, fd_shm, 0)) == MAP_FAILED) {
-            LOG("Error mmap\n");
-            sleep(2);
-        } else {
-            mapped = 1;
-        }
+    if (ftruncate (fd_shm, sizeof(Database_SharedMem_t)) == -1) {
+        LOG("Error ftruncate (%d). Encerrando\n", errno);
+        return 1;
+    }
+    
+    if ((shared_mem_ptr = (Database_SharedMem_t*)mmap(NULL, sizeof(Database_SharedMem_t),
+            PROT_READ, MAP_SHARED, fd_shm, 0)) == MAP_FAILED) {
+        LOG("Error mmap\n");
+        return 1;
     }
     LOG("Memoria compartilhada iniciada\n");
 
@@ -332,7 +330,7 @@ int main(void) {
             }
 
             /* Checa se e o comando correto */
-            if (Query[header_length] == 0x04) {
+            if (Query[header_length] == 0x03) {
                 /* Read Registers - o caso configurado */
                 requested_address = MODBUS_GET_INT16_FROM_INT8(Query,header_length+1);
                 LOG("requested_address = %d\n",requested_address);
@@ -344,14 +342,14 @@ int main(void) {
                 mb_mapping = map_alarms;
 
                 /* Checa se esta na faixa registrada */
-                if ((requested_address > 0) && 
-                        (requested_address < map_alarms->start_input_registers)) {
+                if ((requested_address >= 0) && 
+                        (requested_address < map_alarms->nb_registers)) {
                     LOG("Buscando os dados alarmes\n");
                     if (busca_alarmes(map_alarms,shared_mem_ptr,num_baterias,num_strings) == -1) {
                         LOG("Erro na busca dos alarmes\n");
                         break;
                     }
-                } else if ((requested_address >= 20000) && (requested_address < (20000+map_battinfo->start_input_registers))) {
+                } else if ((requested_address >= 20000) && (requested_address < (20000+map_battinfo->nb_registers))) {
                     LOG("Buscando os dados strings\n");
                     if (busca_strings(map_battinfo,num_baterias,num_strings) == -1) {
                         LOG("Erro na busca das strings\n");
