@@ -1,4 +1,4 @@
-TARGETS=modbus.o
+TARGETS=modbus.o defs.o
 INC=-I.
 OPT=
 FLAGS=-lrt -lpthread -lsqlite3 -lm libmodbus.so.5

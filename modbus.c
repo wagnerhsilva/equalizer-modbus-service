@@ -7,6 +7,7 @@
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <stdio.h>
+#include "defs.h"
 
 #define DATABASE_PATH           "/var/www/equalizer-api/equalizer-api/equalizerdb"
 #define SHARED_MEM_NAME         "/posix-shared-mem"
@@ -49,23 +50,26 @@ int busca_strings(modbus_mapping_t *Mapping, int num_baterias, int num_strings) 
     /*
      * Executando a consulta
      */
-	printf("Preparando busca\n");
+	LOG("Preparando busca\n");
     if(sqlite3_prepare_v2(Sqlite, SQLQuery,strlen(SQLQuery), &Statement, NULL) != SQLITE_OK){
-    	printf("Failed to fetch data: %s\n", sqlite3_errmsg(Sqlite));
+    	LOG("Failed to fetch data: %s\n", sqlite3_errmsg(Sqlite));
 		sqlite3_close(Sqlite);
     	return -1;
     }
 
+    Mapping->tab_registers[Address++] = num_baterias;
+    Mapping->tab_registers[Address++] = num_strings;
+
     /*
      * Recebendo os dados
      */
-	printf("Varrendo dados\n");
+	LOG("Varrendo dados\n");
     while(sqlite3_step(Statement) != SQLITE_DONE) {
 		nbIteracoes++;
     	nbColumns = sqlite3_column_count(Statement);
     	/* Sanity check */
     	if (nbColumns != 5) {
-    		printf("Erro na recuperacao da linha do banco de dados: %d\n",nbColumns);
+    		LOG("Erro na recuperacao da linha do banco de dados: %d\n",nbColumns);
     		ret = -1;
     		break; /* Sai do loop */
     	}
@@ -80,7 +84,7 @@ int busca_strings(modbus_mapping_t *Mapping, int num_baterias, int num_strings) 
     /*
      * Encerrando os trabalhos
      */
-	printf("Finalizando busca\n");
+	LOG("Finalizando busca\n");
     sqlite3_finalize(Statement);
 	sqlite3_close(Sqlite);
 
@@ -125,19 +129,19 @@ int busca_info_baterias(int *num_baterias, int *num_strings, int *num_campos) {
         return -1;
     }
 
-	printf("Executando busca (baterias)...\n");
+	LOG("Executando busca (baterias)...\n");
 	if(sqlite3_prepare_v2(Sqlite, SQLQuery, strlen(SQLQuery), &Statement, NULL) != SQLITE_OK){
-		printf("Failed to fetch data: %s\n", sqlite3_errmsg(Sqlite));
+		LOG("Failed to fetch data: %s\n", sqlite3_errmsg(Sqlite));
         sqlite3_close(Sqlite);
 		return -1;
 	}
-	printf("Processando resultado ...\n");
+	LOG("Processando resultado ...\n");
 	/* Buscando os resultados desejados */
 	while(sqlite3_step(Statement) != SQLITE_DONE) {
 		nbColumns = sqlite3_column_count(Statement);
-		printf("Numero de colunas: %d\n",nbColumns);
+		LOG("Numero de colunas: %d\n",nbColumns);
 		if (nbColumns != 2) {
-			printf("Erro na leitura das colunas: %d\n",nbColumns);
+			LOG("Erro na leitura das colunas: %d\n",nbColumns);
 			ret = -1;
 			break;
 		}
@@ -153,7 +157,7 @@ int busca_info_baterias(int *num_baterias, int *num_strings, int *num_campos) {
 
 	/* Sanity Check */
 	if ((_num_baterias == 0) || (_num_strings == 0)) {
-		printf("ERRO: Valores nulos para BatteryCount ou StringCount\n");
+		LOG("ERRO: Valores nulos para BatteryCount ou StringCount\n");
 		ret = -1;
 	} 
 
@@ -176,7 +180,7 @@ int busca_info_baterias(int *num_baterias, int *num_strings, int *num_campos) {
 int main(void) {
     int ret = 0;
     int dbFileExists = 0;
-    int fd_shm;
+    int fd_shm = -1;
     int num_baterias = 0;
     int num_strings = 0;
     int num_campos = 0;
@@ -184,6 +188,7 @@ int main(void) {
     int mb_socket = 0;
     int header_length = 0;
     int requested_address = 0;
+    int mapped = 0;
     modbus_t *modbus = NULL;
     modbus_mapping_t *map_alarms;
     modbus_mapping_t *map_battinfo;
@@ -195,12 +200,12 @@ int main(void) {
      * Checa se o arquivo com o banco de dados existe. Caso nao
      * existe, aguarda pela sua criacao
      */
-    printf("Checa se arquivo de banco de dados existe\n");
+    LOG("Checa se arquivo de banco de dados existe\n");
     while(!dbFileExists) {
         if (access(DATABASE_PATH,F_OK) != -1) {
             dbFileExists = 1;
         } else {
-            printf("Aguardando criacao de arquivo\n");
+            LOG("Aguardando criacao de arquivo\n");
             sleep(1);
         }
     }
@@ -208,18 +213,25 @@ int main(void) {
     /*
      * Inicializando a memoria compartilhada
      */
-    printf("Inicializando a memoria compartilhada (alarmes)\n");
-    if ((fd_shm = shm_open(SHARED_MEM_NAME, O_RDWR, 0)) == -1) {
-		printf("Error shm_open\n");
-        return 1;
+    LOG("Inicializando a memoria compartilhada (alarmes)\n");
+    while (fd_shm == -1) {
+        if ((fd_shm = shm_open(SHARED_MEM_NAME, O_RDWR, 0)) == -1) {
+		    LOG("Error shm_open. Aguardando criacao\n");
+            sleep(2);
+        }
     }
 
-	if ((shared_mem_ptr = (Database_SharedMem_t*)mmap(NULL, sizeof(Database_SharedMem_t),
-			PROT_READ | PROT_WRITE, MAP_SHARED, fd_shm, 0)) == MAP_FAILED) {
-		printf("Error mmap\n");
-        return 1;
+    LOG("Mapeando variaveis\n");
+    while(!mapped) {
+        if ((shared_mem_ptr = (Database_SharedMem_t*)mmap(NULL, sizeof(Database_SharedMem_t),
+                PROT_READ | PROT_WRITE, MAP_SHARED, fd_shm, 0)) == MAP_FAILED) {
+            LOG("Error mmap\n");
+            sleep(2);
+        } else {
+            mapped = 1;
+        }
     }
-    printf("Memoria compartilhada iniciada\n");
+    LOG("Memoria compartilhada iniciada\n");
 
     /*
      * Recuperando a quantidade de strings e bateriais
@@ -228,28 +240,28 @@ int main(void) {
         munmap(shared_mem_ptr, sizeof(Database_SharedMem_t));
         return 1;
     }
-	printf("Numero de baterias = %d\n",num_baterias);
-	printf("Numero de strings  = %d\n",num_strings);
+	LOG("Numero de baterias = %d\n",num_baterias);
+	LOG("Numero de strings  = %d\n",num_strings);
 
     /*
      * Iniciando o Modbus
      */
     modbus = modbus_new_tcp("0", MODBUS_TCP_DEFAULT_PORT);
     if(!modbus){
-    	printf("Failed to create Modbus TCP context\n");
+    	LOG("Failed to create Modbus TCP context\n");
         munmap(shared_mem_ptr, sizeof(Database_SharedMem_t));
         close(fd_shm);
         return -1; 
     }
-    modbus_set_debug(modbus, TRUE);
+    modbus_set_debug(modbus, FALSE);
 
     /*
      * Mapeamento de tabelas Modbus
      */
     element_count = 3 + num_baterias * num_strings * 4;
-    printf("Alarm setup: ElementCount = %d\n",element_count);
+    LOG("Alarm setup: ElementCount = %d\n",element_count);
     if (element_count >= 20000) {
-        printf("ERRO: Quantidade de registros a serem criados e superior a 20000: %d\n", element_count);
+        LOG("ERRO: Quantidade de registros a serem criados e superior a 20000: %d\n", element_count);
         modbus_free(modbus);
         munmap(shared_mem_ptr, sizeof(Database_SharedMem_t));
         close(fd_shm);
@@ -258,7 +270,7 @@ int main(void) {
     /* Mapeando alarmes */
     map_alarms = modbus_mapping_new_start_address(0, 0, 0, 0, 0, element_count, 0, 0);
     if (map_alarms == NULL) {
-    	printf("Failed to allocate the mapping for alarm data: %d\n",modbus_strerror(errno));
+    	LOG("Failed to allocate the mapping for alarm data: %d\n",modbus_strerror(errno));
         modbus_free(modbus);
         munmap(shared_mem_ptr, sizeof(Database_SharedMem_t));
         close(fd_shm);
@@ -266,9 +278,9 @@ int main(void) {
     }
 
     element_count = num_baterias * num_strings * num_campos + 2;
-    printf("Info setup: ElementCount = %d\n",element_count);
+    LOG("Info setup: ElementCount = %d\n",element_count);
     if (element_count >= 30000) {
-        printf("ERRO: Quantidade de registros a serem criados e superior a 20000: %d\n", element_count);
+        LOG("ERRO: Quantidade de registros a serem criados e superior a 20000: %d\n", element_count);
         modbus_mapping_free(map_alarms);
         modbus_free(modbus);
         munmap(shared_mem_ptr, sizeof(Database_SharedMem_t));
@@ -278,7 +290,7 @@ int main(void) {
     /* Mapeando tabela de informacoes de bateria */
     map_battinfo = modbus_mapping_new_start_address(0, 0, 0, 0, 20000, element_count, 0, 0);
     if (map_battinfo == NULL) {
-    	printf("Failed to allocate the mapping for info data: %d\n",modbus_strerror(errno));
+    	LOG("Failed to allocate the mapping for info data: %d\n",modbus_strerror(errno));
         modbus_mapping_free(map_alarms);
         modbus_free(modbus);
         munmap(shared_mem_ptr, sizeof(Database_SharedMem_t));
@@ -286,10 +298,9 @@ int main(void) {
         return -1;
     }
 
-    printf("modbus_listen\n");
     mb_socket = modbus_tcp_listen(modbus, 1);
     if(mb_socket == -1){
-        printf("Failed to listen : %d\n",modbus_strerror(errno));
+        LOG("Failed to listen : %d\n",modbus_strerror(errno));
         modbus_mapping_free(map_alarms);
         modbus_mapping_free(map_battinfo);
         modbus_free(modbus);
@@ -304,55 +315,62 @@ int main(void) {
         /*
          * Aguarda uma nova conexao
          */
+        LOG("Aguardando nova conexao\n");
         modbus_tcp_accept(modbus, &mb_socket);
         /* 
          * Funciona enquanto estiver conectado
          */
+        LOG("Conectado\n");
         while(1) {
             /* RECEIVE */
             do {
                 ret = modbus_receive(modbus, Query);
             } while(ret == 0);
             if (ret == -1) {
-                printf("Erro modbus_receive()\n");
+                LOG("Erro modbus_receive()\n");
                 break;
             }
 
             /* Checa se e o comando correto */
-            if (Query[header_length] == 0x03) {
+            if (Query[header_length] == 0x04) {
                 /* Read Registers - o caso configurado */
                 requested_address = MODBUS_GET_INT16_FROM_INT8(Query,header_length+1);
+                LOG("requested_address = %d\n",requested_address);
                 /*
                  * Atualiza informações da tabela para preenchimento da resposta.
                  * Mapeamento padrao e o de alarmes
                  */
+                LOG("Configurando mapa inicial\n");
                 mb_mapping = map_alarms;
 
                 /* Checa se esta na faixa registrada */
                 if ((requested_address > 0) && 
-                        (requested_address < map_alarms->start_registers)) {
+                        (requested_address < map_alarms->start_input_registers)) {
+                    LOG("Buscando os dados alarmes\n");
                     if (busca_alarmes(map_alarms,shared_mem_ptr,num_baterias,num_strings) == -1) {
+                        LOG("Erro na busca dos alarmes\n");
                         break;
                     }
-                } else if ((requested_address >= 20000) && (requested_address < (20000+map_battinfo->start_registers))) {
-                    printf("Buscando os dados\n");
+                } else if ((requested_address >= 20000) && (requested_address < (20000+map_battinfo->start_input_registers))) {
+                    LOG("Buscando os dados strings\n");
                     if (busca_strings(map_battinfo,num_baterias,num_strings) == -1) {
+                        LOG("Erro na busca das strings\n");
                         break;
                     }
-                    printf("Atualizando mapa\n");
+                    LOG("Atualizando mapa\n");
                     /* Chaveia o mapeamento para as informacoes da bateria */
                     mb_mapping = map_battinfo;
                 }
             }
 
             /* REPLY */
-            printf("Montando resposta\n");
+            LOG("Montando resposta\n");
             ret = modbus_reply(modbus, Query, ret, mb_mapping);
             if (ret == -1) {
-                printf("Erro modbus_reply()\n");
+                LOG("Erro modbus_reply()\n");
                 break;
             }
-            printf("Resposta enviada\n");
+            LOG("Resposta enviada\n");
         }
     }
 
@@ -367,7 +385,7 @@ int main(void) {
      * Finalizando a memoria compartilhada
      */
     if (munmap(shared_mem_ptr, sizeof(Database_SharedMem_t)) == -1) {
-        printf("Error munmap\n");
+        LOG("Error munmap\n");
         return 1;
     }
 
